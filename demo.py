@@ -1,4 +1,7 @@
+import pdb
+
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
@@ -7,6 +10,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils
 import torch.distributions
+
+from sklearn.preprocessing import minmax_scale
+from pyitlib import discrete_random_variable as drv
 
 
 class SpectralWrapper(nn.Module):
@@ -428,6 +434,76 @@ def get_continuous_bands(bbl):
     return n_bands
 
 
+def get_bin_index(x, nb_bins):
+    ''' Discretize input variable
+
+    :param x:           input variable
+    :param nb_bins:     number of bins to use for discretization
+    '''
+    # get bins limits
+    bins = np.linspace(0, 1, nb_bins + 1)
+
+    # discretize input variable
+    return np.digitize(x, bins[:-1], right=False).astype(int)
+
+
+def get_mutual_information(x, y, normalize=True):
+    ''' Compute mutual information between two random variables
+
+    :param x:      random variable
+    :param y:      random variable
+    '''
+    if normalize:
+        return drv.information_mutual_normalised(x, y, norm_factor='Y', cartesian_product=True)
+    else:
+        return drv.information_mutual(x, y, cartesian_product=True)
+
+
+def mig(factors, codes, continuous_factors=True, nb_bins=10):
+    ''' MIG metric from R. T. Q. Chen, X. Li, R. B. Grosse, and D. K. Duvenaud,
+        “Isolating sources of disentanglement in variationalautoencoders,”
+        in NeurIPS, 2018.
+
+    :param factors:                         dataset of factors
+                                            each column is a factor and each line is a data point
+    :param codes:                           latent codes associated to the dataset of factors
+                                            each column is a latent code and each line is a data point
+    :param continuous_factors:              True:   factors are described as continuous variables
+                                            False:  factors are described as discrete variables
+    :param nb_bins:                         number of bins to use for discretization
+    '''
+    # count the number of factors and latent codes
+    nb_factors = factors.shape[1]
+    nb_codes = codes.shape[1]
+
+    # quantize factors if they are continuous
+    if continuous_factors:
+        factors = minmax_scale(factors)  # normalize in [0, 1] all columns
+        factors = get_bin_index(factors, nb_bins)  # quantize values and get indexes
+
+    # quantize latent codes
+    codes = minmax_scale(codes)  # normalize in [0, 1] all columns
+    codes = get_bin_index(codes, nb_bins)  # quantize values and get indexes
+
+    # compute mutual information matrix
+    mi_matrix = np.zeros((nb_factors, nb_codes))
+    for f in range(nb_factors):
+        for c in range(nb_codes):
+            mi_matrix[f, c] = get_mutual_information(factors[:, f], codes[:, c])
+
+    # compute the mean gap for all factors
+    sum_gap = 0
+    for f in range(nb_factors):
+        mi_f = np.sort(mi_matrix[f, :])
+        # get diff between highest and second highest term and add it to total gap
+        sum_gap += mi_f[-1] - mi_f[-2]
+
+    # compute the mean gap
+    mig_score = sum_gap / nb_factors
+
+    return mig_score
+
+
 def plotMLIntensityMap(testML, im, saveFolder = None):
     map = testML.reshape(im.shape[0:2])
 
@@ -445,6 +521,57 @@ def plotMLIntensityMap(testML, im, saveFolder = None):
         plt.close()
 
 
+def plotHistograms(trainML, trainLabels, testML, testLabels, classLabels, saveFolder = None):
+    tickSize = 15
+    labelSize = 20
+    legendSize = 20
+    titleSize = 25
+
+    keys = trainML.keys()
+    train = np.array([trainML[key] for key in keys])
+    test = np.array([testML[key] for key in keys])
+    # train = np.load("train.npy")
+    # test = np.load("test.npy")
+
+    import pdb
+    labels = classLabels['train']
+    for i in range(3):
+        idx = np.argwhere(trainLabels==i)
+        plt.figure()
+        plt.hist(train[0, idx], density=True, alpha=1, bins=100, color="blue", label="Classic VAE")
+        plt.hist(train[1, idx], density=True, alpha=0.5, bins=100, color="red", label="SpectralVAE")
+        plt.xlabel("Marginal log-likelihood", fontsize=labelSize)
+        plt.ylabel("Frequency",  fontsize=labelSize)
+        plt.grid(True, linestyle='--', alpha=0.5)
+        plt.tick_params(axis='x', labelsize=tickSize)
+        plt.tick_params(axis='y', labelsize=tickSize)
+        plt.xlim(-42500, 2500)
+        plt.legend()
+        plt.title(f'Class {labels[i]}', fontsize=titleSize)
+    
+    labels = classLabels['test']
+    for j in range(5):
+        plt.figure()
+        if j!=1:
+            idx = np.argwhere((testLabels.numpy()==j+1) & (test[0, :]>-42500) & (test[1, :]>-42500))
+            plt.hist(test[0, idx], density=True, alpha=1, bins=50, color="blue", label="Classic VAE")
+            plt.hist(test[1, idx], density=True, alpha=0.5, bins=50, color="red", label="SpectralVAE")
+            plt.xlim(-42500, 2500)
+        else:
+            idx = np.argwhere(testLabels.numpy()==j+1)
+            plt.hist(test[0, idx], density=True, alpha=1, bins=50, color="blue", label="Classic VAE")
+            plt.hist(test[1, idx], density=True, alpha=0.5, bins=50, color="red", label="SpectralVAE")
+        
+        plt.xlabel("Marginal log-likelihood", fontsize=labelSize)
+        plt.ylabel("Frequency",  fontsize=labelSize)
+        plt.grid(True, linestyle='--', alpha=0.5)
+        plt.tick_params(axis='x', labelsize=tickSize)
+        plt.tick_params(axis='y', labelsize=tickSize)
+
+        plt.legend()
+        plt.title(f'Class {labels[j]}', fontsize=titleSize)
+
+
 if __name__ == "__main__":
     # Data 
     spectra = "data/spectra.npy"
@@ -460,6 +587,13 @@ if __name__ == "__main__":
     
     im = np.load("data/train_img.npy")
     testLabels = np.load("data/train_img_labels.npy")
+    
+    plt.figure()
+    plt.imshow(im[:, :, 100])
+    plt.figure()
+    plt.imshow(testLabels)
+    plt.colorbar()
+
     tmp = np.concatenate((testLabels.reshape(im.shape[0], im.shape[1], 1), im), axis=2)
 
     spectra = np.hstack((labels.reshape(-1, 1), spectra))
@@ -467,9 +601,6 @@ if __name__ == "__main__":
 
     testData = torch.from_numpy(tmp).view(-1, tmp.shape[-1]).float()
     testData = testData[:, np.insert(bbl, 0, True)]
-
-    import pdb
-    pdb.set_trace()
 
     # Models
     vae = ClassicVAE(bbl)
@@ -489,26 +620,104 @@ if __name__ == "__main__":
     plotMLIntensityMap(testML, im[:, :, bbl])
 
     # Histograms
-    testData = torch.from_numpy(tmp).view(-1, tmp.shape[-1]).float()
-    testData = testData[:, np.insert(bbl, 0, True)]
-    testML = net1.marginal_likelihood(torch.utils.data.DataLoader(testData[:, 1:], batch_size=64, shuffle=False))
-    testML = np.clip(testML, -20000, 3000)
-    plotMLIntensityMap(testML, im[:, :, bbl])
-    trainData = data.trainData.dataset[data.trainData.indices, :]
-    valData = data.valData.dataset[data.valData.indices, :]
+    classLabels = dict()
+    classLabels['train'] = {0: "Vegetation", 1: "Tile", 2: "Sandy loam"}
+    classLabels['test'] =  {0: "Vegetation", 1: "Sheet Metal", 2: "Sandy loam", 3: "Tile", 4: "Asphalt"}
 
-    classLabels =  {0: "Végétation", 1: "Tuile", 2: "Terre sableuse", 3: "Asphalte", 4: "Tôle"}
-
-    testData = np.vstack((valData, testData))
+    trainData = spectra
     trainLabels, testLabels = trainData[:, 0], testData[:, 0]
-    train, test = torch.from_numpy(trainData[:, 1:]), torch.from_numpy(testData[:, 1:])
+    train, test = torch.from_numpy(trainData[:, 1:]), testData[:, 1:]
 
-    trainML = vae.marginal_likelihood(torch.utils.data.DataLoader(train, batch_size=64, shuffle=False))
-    testML = vae.marginal_likelihood(torch.utils.data.DataLoader(test, batch_size=64, shuffle=False))
-
-    trainML = np.clip(trainML, -20000, 3000)
-    testML = np.clip(testML, -20000, 3000)
+    trainML, testML = dict(), dict()
+    trainML['vae'] = vae.marginal_likelihood(torch.utils.data.DataLoader(train, batch_size=64, shuffle=False))
+    testML['vae'] = vae.marginal_likelihood(torch.utils.data.DataLoader(test, batch_size=64, shuffle=False))
+    trainML['spectralvae'] = spectralvae.marginal_likelihood(torch.utils.data.DataLoader(train, batch_size=64, shuffle=False))
+    testML['spectralvae'] = spectralvae.marginal_likelihood(torch.utils.data.DataLoader(test, batch_size=64, shuffle=False))
 
     plotHistograms(trainML, trainLabels, testML, testLabels, classLabels)
 
+    # Metrics
+    mu, logvar, z, pred = vae(test)
+    _, nll, kld, _ = vae.lossFunc(test, pred, mu, logvar)
+    mse = torch.nn.functional.mse_loss(test, pred)
+    _, _, z, _ = vae(train)
+    MIG = mig(factors, z.squeeze().detach().numpy())
+    pdb.set_trace()
+    dataFrame = pd.DataFrame(np.array([[nll, kld.detach().numpy(), mse.detach().numpy(), MIG, np.mean(testML['vae'])]]))
+
+    z, _, pred = spectralvae(test)
+    _, nll, kld, _ = spectralvae.lossFunc(test, pred)
+    mse = torch.nn.functional.mse_loss(test, pred)
+    z, _, _ = spectralvae(train)
+    MIG = mig(factors, z.squeeze().detach().numpy())
+    dataFrame.append(np.array([nll, kld.detach().numpy(), mse.detach().numpy(), MIG, np.mean(testML['spectralvae'])]))
+
+    dataFrame.columns = ["NLL", "KLD", "MSE", "MIG", "LVM"]
+    dataFrame.index = ["Classic VAE", "SpectralVAE"]
+
+    # Plotting spectra from Sheet Metal and Asphalt class
+    idx1, idx2 = np.argwhere(testLabels==2), np.argwhere(testLabels==5)
+    n1, n2 = np.random.choice(idx1), np.random.choice(idx2)
+    sheetMetal = test[n1, :] 
+    asphalt = test[n2, :] 
+
+    _, _, _, sheetMetalVAE = vae(sheetMetal)
+    _, _, _, asphaltVAE = vae(asphalt)
+    _, _, sheetMetalSpectralVAE = spectralvae(sheetMetal)
+    _, _, asphaltSpectralVAE = spectralvae(asphalt)
+
+    plt.figure(1, figsize=(15, 10))
+    plt.plot(wv, spectra_bbm(sheetMetal, bbl).reshape(-1), linewidth=4, linestyle="-", label="Original", c = "black")
+    plt.plot(wv, spectra_bbm(sheetMetalVAE, bbl).reshape(-1), linewidth=4, linestyle="--", label="VAE", c = "blue")
+    plt.grid(True, linestyle='--', alpha=0.5)
+    # plt.xlabel("Longueurs d'onde (µm)", fontsize = labelSize)
+    # plt.ylabel("Réflectance", fontsize=labelSize)
+    plt.xlabel("Wavelength (µm)", fontsize = labelSize)
+    plt.ylabel("Reflectance", fontsize=labelSize)
+    plt.xticks(fontsize = tickSize)
+    plt.yticks(fontsize = tickSize)
+    plt.ylim(0, 0.8)
+    plt.legend(fontsize=legendSize, ncols=1)
+
+    plt.figure(2, figsize=(15, 10))
+    plt.plot(wv, spectra_bbm(sheetMetal, bbl).reshape(-1), linewidth=4, linestyle="-", label="Original", c = "black")
+    plt.plot(wv, spectra_bbm(sheetMetalSpectralVAE, bbl).reshape(-1), linewidth=4, linestyle="--", label="SpectralVAE", c = "red")
+    plt.grid(True, linestyle='--', alpha=0.5)
+    # plt.xlabel("Longueurs d'onde (µm)", fontsize = labelSize)
+    # plt.ylabel("Réflectance", fontsize=labelSize)
+    plt.xlabel("Wavelength (µm)", fontsize = labelSize)
+    plt.ylabel("Reflectance", fontsize=labelSize)
+    plt.xticks(fontsize = tickSize)
+    plt.yticks(fontsize = tickSize)
+    plt.ylim(0, 0.8)
+    plt.legend(fontsize=legendSize, ncols=1)
+
+    plt.figure(3, figsize=(15, 10))
+    plt.plot(wv, spectra_bbm(asphalt, bbl).reshape(-1), linewidth=4, linestyle="-", label="Original", c = "black")
+    plt.plot(wv, spectra_bbm(asphaltVAE, bbl).reshape(-1), linewidth=4, linestyle="--", label="VAE", c = "blue")
+    plt.grid(True, linestyle='--', alpha=0.5)
+    # plt.xlabel("Longueurs d'onde (µm)", fontsize = labelSize)
+    # plt.ylabel("Réflectance", fontsize=labelSize)
+    plt.xlabel("Wavelength (µm)", fontsize = labelSize)
+    plt.ylabel("Reflectance", fontsize=labelSize)
+    plt.xticks(fontsize = tickSize)
+    plt.yticks(fontsize = tickSize)
+    plt.ylim(0, 0.8)
+    plt.legend(fontsize=legendSize, ncols=1)
+
+    plt.figure(4, figsize=(15, 10))
+    plt.plot(wv, spectra_bbm(asphalt, bbl).reshape(-1), linewidth=4, linestyle="-", label="Original", c = "black")
+    plt.plot(wv, spectra_bbm(asphaltSpectralVAE, bbl).reshape(-1), linewidth=4, linestyle="--", label="SpectralVAE", c = "red")
+    plt.grid(True, linestyle='--', alpha=0.5)
+    # plt.xlabel("Longueurs d'onde (µm)", fontsize = labelSize)
+    # plt.ylabel("Réflectance", fontsize=labelSize)
+    plt.xlabel("Wavelength (µm)", fontsize = labelSize)
+    plt.ylabel("Reflectance", fontsize=labelSize)
+    plt.xticks(fontsize = tickSize)
+    plt.yticks(fontsize = tickSize)
+    plt.ylim(0, 0.8)
+    plt.legend(fontsize=legendSize, ncols=1)
+
+    # Results
+    print(dataFrame)
     plt.show()
