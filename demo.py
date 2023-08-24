@@ -521,6 +521,23 @@ def plotMLIntensityMap(testML, im, saveFolder = None):
         plt.close()
 
 
+def spectra_bbm(spectra, mask_bands):
+    """
+    Args:
+        - spectra: npy array, HS cube
+        - mask_bands: npy boolean array, masked bands
+    Output:
+        HS cube with NaN at masked band locations
+    """
+    if mask_bands is None:
+        return spectra
+    mask_bands = np.array(mask_bands).astype(bool)
+    res = np.zeros((spectra.shape[0], len(mask_bands)))
+    res[:, mask_bands] = spectra
+    res[:, mask_bands == False] = np.nan
+    return res
+
+
 def plotHistograms(trainML, trainLabels, testML, testLabels, classLabels, saveFolder = None):
     tickSize = 15
     labelSize = 20
@@ -642,31 +659,39 @@ if __name__ == "__main__":
     mse = torch.nn.functional.mse_loss(test, pred)
     _, _, z, _ = vae(train)
     MIG = mig(factors, z.squeeze().detach().numpy())
-    pdb.set_trace()
-    dataFrame = pd.DataFrame(np.array([[nll, kld.detach().numpy(), mse.detach().numpy(), MIG, np.mean(testML['vae'])]]))
+    dataFrame = pd.DataFrame({"ClassicVAE": [nll.item(), kld.detach().numpy(), mse.detach().numpy(), MIG, np.mean(testML['vae'])]}, index=["NLL", "KLD", "MSE", "MIG", "LVM"]).T
 
     z, _, pred = spectralvae(test)
     _, nll, kld, _ = spectralvae.lossFunc(test, pred)
     mse = torch.nn.functional.mse_loss(test, pred)
     z, _, _ = spectralvae(train)
     MIG = mig(factors, z.squeeze().detach().numpy())
-    dataFrame.append(np.array([nll, kld.detach().numpy(), mse.detach().numpy(), MIG, np.mean(testML['spectralvae'])]))
+    dataFrame = dataFrame.append(pd.DataFrame({"SpectralVAE": [nll.item(), kld.item(), mse.item(), MIG, np.mean(testML['spectralvae'])]}, index=["NLL", "KLD", "MSE", "MIG", "LVM"]).T)
 
-    dataFrame.columns = ["NLL", "KLD", "MSE", "MIG", "LVM"]
-    dataFrame.index = ["Classic VAE", "SpectralVAE"]
-
+    # dataFrame.columns = ["NLL", "KLD", "MSE", "MIG", "LVM"]
+    # dataFrame.index = ["Classic VAE", "SpectralVAE"]
     # Plotting spectra from Sheet Metal and Asphalt class
-    idx1, idx2 = np.argwhere(testLabels==2), np.argwhere(testLabels==5)
+    idx1, idx2 = np.argwhere(testLabels==2).reshape(-1), np.argwhere(testLabels==5).reshape(-1)
     n1, n2 = np.random.choice(idx1), np.random.choice(idx2)
-    sheetMetal = test[n1, :] 
-    asphalt = test[n2, :] 
+    sheetMetal = test[n1, :].reshape(1, -1)
+    asphalt = test[n2, :].reshape(1, -1)
 
     _, _, _, sheetMetalVAE = vae(sheetMetal)
     _, _, _, asphaltVAE = vae(asphalt)
     _, _, sheetMetalSpectralVAE = spectralvae(sheetMetal)
     _, _, asphaltSpectralVAE = spectralvae(asphalt)
 
-    plt.figure(1, figsize=(15, 10))
+    sheetMetalVAE = sheetMetalVAE.detach().numpy()
+    asphaltVAE = asphaltVAE.detach().numpy()
+    sheetMetalSpectralVAE = sheetMetalSpectralVAE.detach().numpy()
+    asphaltSpectralVAE = asphaltSpectralVAE.detach().numpy()
+
+    labelSize = 25
+    tickSize = 25
+    legendSize = 30
+
+    pdb.set_trace()
+    plt.figure(figsize=(15, 10))
     plt.plot(wv, spectra_bbm(sheetMetal, bbl).reshape(-1), linewidth=4, linestyle="-", label="Original", c = "black")
     plt.plot(wv, spectra_bbm(sheetMetalVAE, bbl).reshape(-1), linewidth=4, linestyle="--", label="VAE", c = "blue")
     plt.grid(True, linestyle='--', alpha=0.5)
@@ -677,9 +702,9 @@ if __name__ == "__main__":
     plt.xticks(fontsize = tickSize)
     plt.yticks(fontsize = tickSize)
     plt.ylim(0, 0.8)
-    plt.legend(fontsize=legendSize, ncols=1)
+    plt.legend(fontsize=legendSize)
 
-    plt.figure(2, figsize=(15, 10))
+    plt.figure(figsize=(15, 10))
     plt.plot(wv, spectra_bbm(sheetMetal, bbl).reshape(-1), linewidth=4, linestyle="-", label="Original", c = "black")
     plt.plot(wv, spectra_bbm(sheetMetalSpectralVAE, bbl).reshape(-1), linewidth=4, linestyle="--", label="SpectralVAE", c = "red")
     plt.grid(True, linestyle='--', alpha=0.5)
@@ -690,9 +715,9 @@ if __name__ == "__main__":
     plt.xticks(fontsize = tickSize)
     plt.yticks(fontsize = tickSize)
     plt.ylim(0, 0.8)
-    plt.legend(fontsize=legendSize, ncols=1)
+    plt.legend(fontsize=legendSize)
 
-    plt.figure(3, figsize=(15, 10))
+    plt.figure(figsize=(15, 10))
     plt.plot(wv, spectra_bbm(asphalt, bbl).reshape(-1), linewidth=4, linestyle="-", label="Original", c = "black")
     plt.plot(wv, spectra_bbm(asphaltVAE, bbl).reshape(-1), linewidth=4, linestyle="--", label="VAE", c = "blue")
     plt.grid(True, linestyle='--', alpha=0.5)
@@ -703,9 +728,9 @@ if __name__ == "__main__":
     plt.xticks(fontsize = tickSize)
     plt.yticks(fontsize = tickSize)
     plt.ylim(0, 0.8)
-    plt.legend(fontsize=legendSize, ncols=1)
+    plt.legend(fontsize=legendSize)
 
-    plt.figure(4, figsize=(15, 10))
+    plt.figure(figsize=(15, 10))
     plt.plot(wv, spectra_bbm(asphalt, bbl).reshape(-1), linewidth=4, linestyle="-", label="Original", c = "black")
     plt.plot(wv, spectra_bbm(asphaltSpectralVAE, bbl).reshape(-1), linewidth=4, linestyle="--", label="SpectralVAE", c = "red")
     plt.grid(True, linestyle='--', alpha=0.5)
@@ -716,7 +741,7 @@ if __name__ == "__main__":
     plt.xticks(fontsize = tickSize)
     plt.yticks(fontsize = tickSize)
     plt.ylim(0, 0.8)
-    plt.legend(fontsize=legendSize, ncols=1)
+    plt.legend(fontsize=legendSize)
 
     # Results
     print(dataFrame)
